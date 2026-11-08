@@ -1,8 +1,10 @@
-# mshell — no-root Termux terminal with on-demand OpenGL window
+# mshell — no-root Termux terminal with on-demand OpenGL window and Nadrino OS
 
 A Termux-native terminal that works without root and without any display server.
 Type **`!experiment`** at the shell prompt to open an OpenGL ES 2.0 terminal
-window that shares the same shell session.
+window that shares the same shell session, or **`!adaptivenadrino`** to launch
+the Nadrino OS desktop — a Windows 95/98-style virtual operating system
+running inside the terminal grid.
 
 ## How it works
 
@@ -10,16 +12,21 @@ window that shares the same shell session.
 mshell (launcher)
   │
   ├── Runs a shell behind a pty, mirrors I/O to your real terminal
-  ├── Sees every byte typed; detects `!experiment` as a command trigger
+  ├── Sees every byte typed; detects `!experiment` and `!adaptivenadrino`
   ├── On `!experiment` → fork/execs itself as `mshell --gl`
   │   └── OpenGL window: SDL2 + GLES2 + same pty, same session
   │   └── When you close the window, the shell session continues
   │
+  ├── On `!adaptivenadrino` → fork/execs itself as `mshell --os`
+  │   └── Nadrino OS desktop: SDL2 + GLES2, classic Windows 95 UI
+  │   └── Floating windows, Start menu, taskbar, desktop icons
+  │
   └── If built without SDL2 → `make launcher` → just a wrapper shell
 ```
 
-No root needed. No display server needed for the launcher. The `--gl` window
-needs SDL's video driver (Termux:X11, KMS with root, or a Wayland compositor).
+No root needed. No display server needed for the launcher. The `--gl` and
+`--os` windows need SDL's video driver (Termux:X11, KMS with root, or a
+Wayland compositor).
 
 ## Building
 
@@ -55,6 +62,7 @@ pkg install libsdl2
 ```bash
 ./mshell                           # starts a shell
 !experiment                        # opens the OpenGL window
+!adaptivenadrino                   # opens the Nadrino OS desktop
 # close the window → shell continues
 exit                               # done
 ```
@@ -63,6 +71,12 @@ exit                               # done
 
 ```bash
 ./mshell --gl                      # OpenGL window straight away
+```
+
+### Nadrino OS mode
+
+```bash
+./mshell --os                      # Nadrino OS desktop straight away
 ```
 
 ### Pick a shell
@@ -85,7 +99,34 @@ MSHELL_SHELL=/usr/bin/bash ./mshell
 | Scroll forward      | PgDn              |
 | Interrupt (Ctrl-C)  | Ctrl+C            |
 | Exit shell          | Ctrl-D or exit    |
-| Function keys       | F1–F4             |
+| Function keys       | F1–F12            |
+
+## Nadrino OS
+
+Type **`!adaptivenadrino`** or run **`./mshell --os`** to launch the Nadrino OS
+desktop — a Windows 95/98-style virtual operating system rendered in the terminal
+grid. Features:
+
+- **Classic Windows 95/98 palette**: teal desktop, navy title bars, gray taskbar
+- **Floating windows**: drag by the title bar, close with `x`, minimize
+- **Start menu**: click Start to toggle the menu
+- **Desktop icons**: double-click (or tap) to launch apps
+- **Built-in apps**:
+  - **Terminal** — echo shell output
+  - **Calculator** — basic arithmetic
+  - **Text Editor** — simple text input
+  - **File Manager** — browses files
+  - **About** — system information
+- **Taskbar**: Start button + window buttons + clock
+
+### Controls (Nadrino OS)
+
+| Action              | Key(s)            |
+|---------------------|-------------------|
+| Click / drag        | Mouse             |
+| Function keys       | F1–F12            |
+| Close window        | Click `x` button  |
+| Toggle Start menu   | Click Start       |
 
 ## Display servers
 
@@ -100,13 +141,15 @@ The `--gl` window needs a display:
 
 ```
 termux-gl/
-├── main.c      # Two-mode entry point: launcher + GL window (shared code)
+├── main.c      # Two-mode entry point: launcher + GL window + Nadrino OS
 ├── term.c      # Grid model, ANSI/VT parser, 500-line scrollback
 ├── term.h      # Public API for the terminal model
 ├── gl.c        # GLES2 renderer (shaders, atlas, quad batching)
 ├── gl.h        # Renderer API
 ├── font.c      # 5×7 bitmap font, 2× scaled into atlas
 ├── font.h      # Font constants and atlas API
+├── os_nadrino.c# Nadrino OS desktop (Win95-style UI, apps, windows)
+├── os_nadrino.h# Nadrino OS data structures and API
 ├── Makefile    # Two targets: mshell (full), mshell-launcher (no SDL)
 └── README.md   # This file
 ```

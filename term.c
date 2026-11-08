@@ -683,6 +683,14 @@ int term_encode_key(const term_t *t, term_key_t key, int mods, char *out, int ou
     case K_F2:    n = snprintf(out, outsz, "\x1bOQ"); break;
     case K_F3:    n = snprintf(out, outsz, "\x1bOR"); break;
     case K_F4:    n = snprintf(out, outsz, "\x1bOS"); break;
+    case K_F5:    n = snprintf(out, outsz, "\x1b[15~"); break;
+    case K_F6:    n = snprintf(out, outsz, "\x1b[17~"); break;
+    case K_F7:    n = snprintf(out, outsz, "\x1b[18~"); break;
+    case K_F8:    n = snprintf(out, outsz, "\x1b[19~"); break;
+    case K_F9:    n = snprintf(out, outsz, "\x1b[20~"); break;
+    case K_F10:   n = snprintf(out, outsz, "\x1b[21~"); break;
+    case K_F11:   n = snprintf(out, outsz, "\x1b[23~"); break;
+    case K_F12:   n = snprintf(out, outsz, "\x1b[24~"); break;
     case K_ESC:   out[n++] = 0x1b; break;
     case K_ENTER: out[n++] = '\r'; break;
     case K_TAB:   out[n++] = '\t'; break;

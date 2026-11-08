@@ -1,15 +1,17 @@
-# mshell — no-root Termux terminal + on-demand OpenGL ES 2.0 window
+# mshell — no-root Termux terminal + on-demand OpenGL ES 2.0 window / Nadrino OS
 #
-# Typing  !experiment  at the shell opens the GLES2 terminal window
-# (the launcher itself needs no display and no root).
+# Typing  !experiment  at the shell opens the GLES2 terminal window.
+# Typing  !adaptivenadrino  opens the Nadrino OS desktop.
+# The launcher itself needs no display and no root.
 #
 # Run inside Termux:  pkg install clang make libutil-dev   [+ libsdl2 for GL]
 #
 # Usage:
-#   make            -> mshell          (launcher + GL window, needs libsdl2)
+#   make            -> mshell          (launcher + GL window + OS, needs libsdl2)
 #   make launcher   -> mshell-launcher (plain shell wrapper, no SDL needed)
-#   ./mshell                          then type:  !experiment
+#   ./mshell                          then type:  !experiment  or  !adaptivenadrino
 #   ./mshell --gl                     GL window straight away
+#   ./mshell --os                     Nadrino OS desktop straight away
 #   MSHELL_SHELL=/usr/bin/bash ./mshell   pick a shell
 
 CC       = clang
@@ -25,7 +27,7 @@ GL_LIBS   = $(LDLIBS) -lSDL2 -lGLESv2 -lEGL
 
 all: mshell
 
-mshell: main.c term.c gl.c font.c
+mshell: main.c term.c gl.c font.c os_nadrino.c
 	$(CC) $(GL_CFLAGS) -o $@ $^ $(GL_LIBS)
 
 mshell-launcher: main.c term.c
