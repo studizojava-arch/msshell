@@ -1,115 +1,148 @@
-# msshell
-no root termux terminal with on demand opengl es2.0 window
-# MyShell - Android Terminal Shell
+# mshell — no-root Termux terminal with on-demand OpenGL window
 
-A minimal POSIX-compatible shell packaged as an Android APK.
+A Termux-native terminal that works without root and without any display server.
+Type **`!experiment`** at the shell prompt to open an OpenGL ES 2.0 terminal
+window that shares the same shell session.
 
-## Features
-
-- **22 builtins**: cd, pwd, echo, export, unset, env, help, exit, clear,
-  history, type, source, eval, true, false, test, alias, wait, set, read,
-  trap, umask
-- **Pipes**: `ls | grep .c | wc -l`
-- **Redirections**: `>file`, `>>file`, `<file`, `2>&1`
-- **Background jobs**: `sleep 10 &`
-- **Variable expansion**: `$HOME`, `${PATH}`, `$?`
-- **Aliases**: `alias ll='ls -la'`
-- **Command history**
-- **Signal handling** (Ctrl-C)
-
-## Project Structure
+## How it works
 
 ```
-android/MyShell/
-├── app/
-│   ├── src/main/
-│   │   ├── java/com/myshell/app/
-│   │   │   ├── MainActivity.java     # Main activity
-│   │   │   ├── TerminalView.java     # Terminal UI component
-│   │   │   └── TerminalShell.java    # Shell process manager
-│   │   ├── jni/
-│   │   │   ├── Android.mk            # NDK build config
-│   │   │   ├── Application.mk        # NDK application config
-│   │   │   └── shell.c               # C shell source (copied from src/)
-│   │   ├── jniLibs/                  # Compiled binaries (generated)
-│   │   ├── res/
-│   │   │   ├── layout/activity_main.xml
-│   │   │   ├── values/strings.xml
-│   │   │   └── mipmap-*/ic_launcher*.png
-│   │   └── AndroidManifest.xml
-│   └── build.gradle
-├── build.gradle
-└── settings.gradle
+mshell (launcher)
+  │
+  ├── Runs a shell behind a pty, mirrors I/O to your real terminal
+  ├── Sees every byte typed; detects `!experiment` as a command trigger
+  ├── On `!experiment` → fork/execs itself as `mshell --gl`
+  │   └── OpenGL window: SDL2 + GLES2 + same pty, same session
+  │   └── When you close the window, the shell session continues
+  │
+  └── If built without SDL2 → `make launcher` → just a wrapper shell
 ```
 
-## Build Options
+No root needed. No display server needed for the launcher. The `--gl` window
+needs SDL's video driver (Termux:X11, KMS with root, or a Wayland compositor).
 
-### Option 1: Build APK (requires Android Studio/NDK)
+## Building
 
-1. Install Android Studio with NDK
-2. Set `ANDROID_HOME` environment variable
-3. Run:
-   ```bash
-   build_apk.bat
-   ```
-   or
-   ```bash
-   ./gradlew assembleDebug
-   ```
-
-### Option 2: Build for Termux (no NDK needed)
-
-1. Install Termux from F-Droid
-2. Copy `shell.c` to your phone
-3. In Termux:
-   ```bash
-   pkg install clang make
-   clang -O2 -o myshell shell.c
-   ./myshell
-   ```
-
-### Option 3: Cross-compile with Zig
+### Prerequisites (Termux)
 
 ```bash
-python tools/build_native.py
+pkg update
+pkg install clang make libutil-dev
 ```
 
-This uses the Zig toolchain to compile the C source into ARM64/x86_64
-binaries that can be placed in the APK's `jniLibs/` folder.
-
-## Install APK
+### Two build modes
 
 ```bash
-adb install app/build/outputs/apk/debug/app-debug.apk
+# Full build: launcher + GL window (needs SDL2 + EGL/GLESv2)
+make                       # or: make all
+
+# Launcher only (no SDL, no display server needed at all)
+make launcher
+```
+
+### SDL2 packages (for the GL window)
+
+```bash
+pkg install libsdl2
+# libutil-dev is already installed — provides forkpty()
+# libGLESv2 and libEGL are provided by Android's bionic at runtime
 ```
 
 ## Usage
 
-Once installed, the app opens with a terminal interface. Type commands:
+### Launcher mode (default)
 
 ```bash
-$ help
-$ ls -la
-$ cd /sdcard
-$ pwd
-$ echo "Hello World"
-$ export MYVAR="test"
-$ echo $MYVAR
-$ cat > file.txt << EOF
-> Hello
-> World
-> EOF
+./mshell                           # starts a shell
+!experiment                        # opens the OpenGL window
+# close the window → shell continues
+exit                               # done
+```
+
+### GL-only mode
+
+```bash
+./mshell --gl                      # OpenGL window straight away
+```
+
+### Pick a shell
+
+```bash
+MSHELL_SHELL=/usr/bin/bash ./mshell
+```
+
+### No-mirror mode
+
+```bash
+./mshell --no-mirror               # shell output goes to GL window only
+```
+
+## Controls (GL window)
+
+| Action              | Key(s)            |
+|---------------------|-------------------|
+| Scroll back         | PgUp              |
+| Scroll forward      | PgDn              |
+| Interrupt (Ctrl-C)  | Ctrl+C            |
+| Exit shell          | Ctrl-D or exit    |
+| Function keys       | F1–F4             |
+
+## Display servers
+
+The `--gl` window needs a display:
+
+- **Termux:X11** (no root): install from the Tur repo, start the X server,
+  `SDL_VIDEODRIVER=x11 ./mshell --gl`
+- **KMS/DRM** (root): `SDL_VIDEODRIVER=kmsdrm ./mshell --gl`
+- **The launcher itself** needs no display — it runs entirely in the terminal.
+
+## Project structure
+
+```
+termux-gl/
+├── main.c      # Two-mode entry point: launcher + GL window (shared code)
+├── term.c      # Grid model, ANSI/VT parser, 500-line scrollback
+├── term.h      # Public API for the terminal model
+├── gl.c        # GLES2 renderer (shaders, atlas, quad batching)
+├── gl.h        # Renderer API
+├── font.c      # 5×7 bitmap font, 2× scaled into atlas
+├── font.h      # Font constants and atlas API
+├── Makefile    # Two targets: mshell (full), mshell-launcher (no SDL)
+└── README.md   # This file
 ```
 
 ## Architecture
 
-The app uses a native C shell binary compiled for Android (ARM64/x86).
-The Java layer handles:
-1. Extracting the native binary from the APK
-2. Running it as a subprocess
-3. Connecting stdin/stdout to the terminal UI
-4. Rendering text output
+### Launcher mode
+
+1. `forkpty()` creates a pty master fd running a shell.
+2. `select()` polls both stdin (your keyboard) and the pty master.
+3. Bytes from the shell are mirrored to stdout; your keystrokes are forwarded
+   to the pty.
+4. `!experiment` is detected by scanning mirrored output — it must start a
+   command (after prompt, newline, `;`, `|`, `&`), with no quotes.
+5. On trigger: `fork()` a child that re-exec's `mshell --gl`; the launcher
+   waits on it, then continues.
+
+### GL window mode
+
+1. SDL2 creates an OpenGL ES 2.0 context on the display surface.
+2. Same `forkpty()` + `select()` + `term_feed()` pipeline as the launcher.
+3. Grid is rendered each frame: background pass + glyph pass = one `glDrawArrays`.
+4. SDL keyboard events map to terminal key sequences via `term_send_key()`.
+5. When the window closes, the shell session (on the pty) survives.
+
+## Technical notes
+
+- **Colors are packed `0xAABBGGRR`** — uploads to GLES2 as `UNSIGNED_BYTE`
+  with `GL_RGBA` without swizzling.
+- **The atlas uses `GL_LUMINANCE`** — the fragment shader reads `.r` as coverage
+  and multiplies the vertex colour by it.
+- **`forkpty()`** creates a pty master set to non-blocking mode.
+- **Scrollback** is a ring buffer of rows. `term_cell()` with `off > 0` returns
+  cells from the ring; `off == 0` returns the live grid.
+- **OSC 0/2** window titles update the SDL window title.
 
 ## License
 
-MIT
+MIT — use it however you like.
