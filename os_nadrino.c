@@ -27,17 +27,71 @@
 
 /* ------------------------------------------------------------------ palette */
 
-#define CLR_WINDOW   RGBA(0xC0, 0xC0, 0xC0, 0xFF)
-#define CLR_TITLE    RGBA(0x00, 0x00, 0x80, 0xFF)
-#define CLR_TITLE_IN RGBA(0x80, 0x80, 0x80, 0xFF)
-#define CLR_DESKTOP  RGBA(0x00, 0x80, 0x80, 0xFF)
-#define CLR_TEXT     RGBA(0x00, 0x00, 0x00, 0xFF)
-#define CLR_TEXT_WIN RGBA(0xFF, 0xFF, 0xFF, 0xFF)
-#define CLR_TASKBAR  RGBA(0xC0, 0xC0, 0xC0, 0xFF)
-#define CLR_BORDER   RGBA(0x80, 0x80, 0x80, 0xFF)
+typedef struct {
+    uint32_t window;    /* body bg */
+    uint32_t title;     /* focused title bar */
+    uint32_t title_in;  /* unfocused title bar */
+    uint32_t desktop;   /* desktop background */
+    uint32_t text;      /* normal text */
+    uint32_t text_win;  /* white text on dark bg */
+    uint32_t taskbar;
+    uint32_t border;
+    uint32_t highlight;
+    uint32_t edit;
+    uint32_t icon_sel;
+    uint32_t start_menu;
+} nd_pal_t;
+
+static const nd_pal_t pal_classic = {
+    RGBA(0xC0,0xC0,0xC0,0xFF),  /* window   */
+    RGBA(0x00,0x00,0x80,0xFF),  /* title    */
+    RGBA(0x80,0x80,0x80,0xFF),  /* title_in */
+    RGBA(0x00,0x80,0x80,0xFF),  /* desktop  */
+    RGBA(0x00,0x00,0x00,0xFF),  /* text     */
+    RGBA(0xFF,0xFF,0xFF,0xFF),  /* text_win */
+    RGBA(0xC0,0xC0,0xC0,0xFF),  /* taskbar  */
+    RGBA(0x80,0x80,0x80,0xFF),  /* border   */
+    RGBA(0x00,0x00,0xFF,0xFF),  /* highlight*/
+    RGBA(0xFF,0xFF,0xFF,0xFF),  /* edit     */
+    RGBA(0x00,0x00,0x80,0x80),  /* icon_sel */
+    RGBA(0x00,0x00,0x80,0xFF),  /* start menu*/
+};
+
+static const nd_pal_t pal_aero = {
+    RGBA(0xF0,0xF0,0xF0,0xFF),  /* window   */
+    RGBA(0x1E,0x5B,0xA0,0xFF),  /* title    */
+    RGBA(0xA0,0xB8,0xD0,0xFF),  /* title_in */
+    RGBA(0x0B,0x2E,0x5C,0xFF),  /* desktop  */
+    RGBA(0x1A,0x1A,0x1A,0xFF),  /* text     */
+    RGBA(0xFF,0xFF,0xFF,0xFF),  /* text_win */
+    RGBA(0xD0,0xD8,0xE0,0xFF),  /* taskbar  */
+    RGBA(0x70,0x88,0xA0,0xFF),  /* border   */
+    RGBA(0x30,0x70,0xC0,0xFF),  /* highlight*/
+    RGBA(0xFF,0xFF,0xFF,0xFF),  /* edit     */
+    RGBA(0x1E,0x5B,0xA0,0x80),  /* icon_sel */
+    RGBA(0x20,0x60,0xA8,0xFF),  /* start menu*/
+};
+
+static nd_pal_t get_pal(const os_state_t *os)
+{
+    return (os->theme == ND_THEME_AERO) ? pal_aero : pal_classic;
+}
+
+/* Classic (Windows 95) colours. Rendering always paints with these; the Aero
+ * theme is applied afterwards by aero_recolor(), which maps each classic slot
+ * onto its Aero equivalent. One paint path, two looks, no duplicated layout. */
+#define CLR_WINDOW    RGBA(0xC0, 0xC0, 0xC0, 0xFF)
+#define CLR_TITLE     RGBA(0x00, 0x00, 0x80, 0xFF)
+#define CLR_TITLE_IN  RGBA(0x80, 0x80, 0x80, 0xFF)
+#define CLR_DESKTOP   RGBA(0x00, 0x80, 0x80, 0xFF)
+#define CLR_TEXT      RGBA(0x00, 0x00, 0x00, 0xFF)
+#define CLR_TEXT_WIN  RGBA(0xFF, 0xFF, 0xFF, 0xFF)
+#define CLR_TASKBAR   RGBA(0xC0, 0xC0, 0xC0, 0xFF)
+#define CLR_BORDER    RGBA(0x80, 0x80, 0x80, 0xFF)
 #define CLR_HIGHLIGHT RGBA(0x00, 0x00, 0xFF, 0xFF)
-#define CLR_EDIT     RGBA(0xFF, 0xFF, 0xFF, 0xFF)
-#define CLR_ICON_SEL RGBA(0x00, 0x00, 0x80, 0x80)
+#define CLR_EDIT      RGBA(0xFF, 0xFF, 0xFF, 0xFF)
+#define CLR_ICON_SEL  RGBA(0x00, 0x00, 0x80, 0x80)
+#define CLR_START     RGBA(0x00, 0x00, 0x80, 0xFF)
 
 /* ------------------------------------------------------------------ helpers */
 
@@ -118,6 +172,19 @@ void os_nadrino_tick(os_state_t *os)
 {
     os->tick++;
 }
+
+/* Look + box64 preset, normally pushed in by the $simpleinterface screen. */
+void os_nadrino_set_theme(os_state_t *os, int theme)
+{
+    os->theme = (theme >= 0 && theme < ND_THEME_COUNT) ? theme : ND_THEME_WIN95;
+}
+
+void os_nadrino_set_stab(os_state_t *os, int stab)
+{
+    os->stab = (stab >= 0 && stab <= 2) ? stab : 0;
+}
+
+int os_nadrino_launch(os_state_t *os, nd_app_t app);
 
 /* ------------------------------------------------------------------ window ops */
 
@@ -464,6 +531,105 @@ static void render_taskbar(const os_state_t *os, term_t *t)
     }
 }
 
+/* ---- Aero (Windows 7) look ----
+ *
+ * The whole desktop is painted with the classic constants, then this pass maps
+ * each classic colour onto its Aero equivalent. One layout, two skins, and the
+ * window/app code never needs to know which theme is active. */
+
+static void aero_recolor(const os_state_t *os, term_t *t)
+{
+    const nd_pal_t p = get_pal(os);
+    /* Slot order matches nd_pal_t. CLR_EDIT and CLR_TEXT_WIN are both white,
+     * so they collapse onto one entry; Aero keeps both white and text stays
+     * readable on the light window bodies. */
+    const uint32_t from[11] = {
+        CLR_WINDOW,   /* also the classic taskbar */
+        CLR_TITLE,
+        CLR_TITLE_IN,
+        CLR_DESKTOP,
+        CLR_TEXT,
+        CLR_TEXT_WIN,
+        CLR_BORDER,
+        CLR_HIGHLIGHT,
+        CLR_EDIT,
+        CLR_ICON_SEL,
+        CLR_TASKBAR
+    };
+    const uint32_t to[11] = {
+        p.window, p.title, p.title_in, p.desktop, p.text,
+        p.text_win, p.border, p.highlight, p.edit, p.icon_sel, p.taskbar
+    };
+    int x, y, i;
+
+    for (y = 0; y < t->rows; y++) {
+        for (x = 0; x < t->cols; x++) {
+            const term_cell_t *c = term_cell(t, x, y, 0);
+            term_cell_t *m;
+            if (!c) continue;
+            m = (term_cell_t *)c;
+            for (i = 0; i < 11; i++) {
+                if (m->bg == from[i]) { m->bg = to[i]; break; }
+            }
+            /* Text: dark body text becomes Aero's near-black, but labels that
+             * sat on the teal desktop must flip to white to stay legible on
+             * the dark blue wallpaper. */
+            for (i = 0; i < 11; i++) {
+                if (m->fg == from[i]) { m->fg = to[i]; break; }
+            }
+        }
+    }
+}
+
+/* ---- Start menu ----
+ *
+ * Previously start_open was tracked but nothing ever drew it. This is the
+ * panel itself: app list, a theme toggle line, and shutdown. */
+
+#define SM_W  24
+#define SM_ROWS (ND_ICON_COUNT + 3)   /* apps + separator + theme + shutdown */
+
+static void render_start_menu(const os_state_t *os, term_t *t)
+{
+    const nd_pal_t *pal = &pal_classic;
+    int x0 = 0;
+    int y1 = os->rows - ND_TASKBAR_H;
+    int y0 = y1 - SM_ROWS;
+    int i;
+    char buf[SM_W + 1];
+
+    if (y0 < 0) y0 = 0;
+
+    /* banner strip down the left edge, like the 95/Aero start menus have */
+    rect_fill(t, x0, y0, 4, y1, ' ', CLR_TEXT_WIN, CLR_TITLE);
+    for (i = y0; i < y1; i++)
+        cell_set(t, x0 + 3, i, '|', CLR_BORDER, CLR_WINDOW);
+
+    for (i = 0; i < SM_ROWS; i++) {
+        int y = y0 + i;
+        uint32_t bg = CLR_WINDOW;
+        uint32_t fg = CLR_TEXT;
+        if (i < ND_ICON_COUNT && os->menu_sel == i) { bg = CLR_HIGHLIGHT; fg = CLR_TEXT_WIN; }
+
+        if (i < ND_ICON_COUNT) {
+            snprintf(buf, sizeof(buf), "   %-19s", app_name((nd_app_t)i));
+        } else if (i == ND_ICON_COUNT) {
+            snprintf(buf, sizeof(buf), "   --------------------");
+        } else if (i == ND_ICON_COUNT + 1) {
+            snprintf(buf, sizeof(buf), "   Theme: %s",
+                     os->theme == ND_THEME_AERO ? "Aero Win7" : "Classic 95");
+        } else {
+            snprintf(buf, sizeof(buf), "   Shut down");
+        }
+        if (i == ND_ICON_COUNT + 2 && os->menu_sel == SM_ROWS - 1) {
+            bg = CLR_HIGHLIGHT; fg = CLR_TEXT_WIN;
+        }
+        draw_line(t, x0 + 4, y, SM_W - 4, buf, fg, bg);
+    }
+
+    (void)pal;
+}
+
 /* ---- main render ---- */
 
 void os_nadrino_render(const os_state_t *os, term_t *t)
@@ -483,6 +649,12 @@ void os_nadrino_render(const os_state_t *os, term_t *t)
 
     /* taskbar */
     render_taskbar(os, t);
+
+    /* start menu on top of everything except the Aero pass */
+    if (os->start_open) render_start_menu(os, t);
+
+    /* Aero (Windows 7) look: repaint the classic palette with Aero colours */
+    if (os->theme == ND_THEME_AERO) aero_recolor(os, t);
 }
 
 /* ------------------------------------------------------------------ input */

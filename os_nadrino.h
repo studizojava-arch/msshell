@@ -3,11 +3,13 @@
  * terminal grid (and from there to the GL window).
  *
  * The OS is self-contained: it only writes cells into a term_t grid and
- * receives key/text/click events from the host (main.c). No pty, no SDL.
+ * receives key/text/click events from the host (main.c). No pty, no SDL,
+ * no network. All rendering is via term_cell() writes.
  *
- * Look & feel: Windows 95 — teal desktop, navy title bars, gray taskbar with
- * a Start menu, desktop icons, and five built-in apps:
- *   Terminal, Calculator, Text Editor, File Manager, About.
+ * Look & feel: Windows 95 (default) or Aero (Windows 7) — theme switchable.
+ * Teal desktop, navy title bars, gray taskbar with a Start menu, desktop
+ * icons, and five built-in apps: Terminal, Calculator, Text Editor, File
+ * Manager, About.
  */
 #ifndef MSHELL_OS_NADRINO_H
 #define MSHELL_OS_NADRINO_H
@@ -32,6 +34,12 @@ typedef enum {
     ND_WIN_MINIMIZED,
     ND_WIN_MAXIMIZED
 } nd_win_state_t;
+
+typedef enum {
+    ND_THEME_WIN95 = 0,
+    ND_THEME_AERO,
+    ND_THEME_COUNT
+} nd_theme_t;
 
 /* ---- app state (embedded, no malloc needed) ---- */
 
@@ -93,9 +101,12 @@ typedef struct {
     int focus;            /* index into win[], -1 = desktop */
     int icon_sel;         /* selected desktop icon */
     int start_open;       /* Start menu visible */
+    int menu_sel;         /* highlighted row in the Start menu */
     int running;
     int cols, rows;
     int tick;             /* incremented by os_nadrino_tick() */
+    int theme;            /* nd_theme_t: classic Win95 or Aero Win7 */
+    int stab;             /* 0 basic, 1 enhanced, 2 stability x3 (from config) */
 } os_state_t;
 
 /* ---- lifecycle ---- */
@@ -105,6 +116,15 @@ void os_nadrino_free(os_state_t *os);
 int  os_nadrino_running(const os_state_t *os);
 void os_nadrino_resize(os_state_t *os, int cols, int rows);
 void os_nadrino_tick(os_state_t *os);
+
+/* Look and box64 preset, normally taken from the $simpleinterface screen.
+ * Values are nd_theme_t / 0..2; out-of-range values fall back to Win95/basic. */
+void os_nadrino_set_theme(os_state_t *os, int theme);
+void os_nadrino_set_stab(os_state_t *os, int stab);
+
+/* Opens an app window. Used by the dock icons in the simple interface.
+ * Returns 0 on success, -1 if the app is unknown or no window slot is free. */
+int  os_nadrino_launch(os_state_t *os, nd_app_t app);
 
 /* ---- drawing: paints the whole desktop into the grid ---- */
 

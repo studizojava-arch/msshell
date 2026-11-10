@@ -27,7 +27,7 @@ GL_LIBS   = $(LDLIBS) -lSDL2 -lGLESv2 -lEGL
 
 all: mshell
 
-mshell: main.c term.c gl.c font.c os_nadrino.c
+mshell: main.c term.c gl.c font.c os_nadrino.c simple_ui.c
 	$(CC) $(GL_CFLAGS) -o $@ $^ $(GL_LIBS)
 
 mshell-launcher: main.c term.c

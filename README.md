@@ -6,6 +6,10 @@ window that shares the same shell session, or **`!adaptivenadrino`** to launch
 the Nadrino OS desktop — a Windows 95/98-style virtual operating system
 running inside the terminal grid.
 
+Type **`$simpleinterface`** (or run **`--simple`**) to open the dock-based
+configuration UI: add named containers, pick a theme (Classic / Win7 Aero),
+set a box64 stability preset, and hit **LAUNCH** to boot the chosen OS.
+
 ## How it works
 
 ```
@@ -21,12 +25,15 @@ mshell (launcher)
   │   └── Nadrino OS desktop: SDL2 + GLES2, classic Windows 95 UI
   │   └── Floating windows, Start menu, taskbar, desktop icons
   │
+  ├── On `$simpleinterface` → fork/execs itself as `mshell --simple`
+  │   └── Dock-based configuration UI: containers, themes, stability
+  │
   └── If built without SDL2 → `make launcher` → just a wrapper shell
 ```
 
-No root needed. No display server needed for the launcher. The `--gl` and
-`--os` windows need SDL's video driver (Termux:X11, KMS with root, or a
-Wayland compositor).
+No root needed. No display server needed for the launcher. The `--gl`,
+`--os`, and `--simple` windows need SDL's video driver (Termux:X11, KMS
+with root, or a Wayland compositor).
 
 ## Building
 
@@ -63,6 +70,7 @@ pkg install libsdl2
 ./mshell                           # starts a shell
 !experiment                        # opens the OpenGL window
 !adaptivenadrino                   # opens the Nadrino OS desktop
+$simpleinterface                   # opens the dock-based configuration UI
 # close the window → shell continues
 exit                               # done
 ```
@@ -77,6 +85,12 @@ exit                               # done
 
 ```bash
 ./mshell --os                      # Nadrino OS desktop straight away
+```
+
+### Simple Interface (dock + containers + box64 presets)
+
+```bash
+./mshell --simple                  # dock UI straight away
 ```
 
 ### Pick a shell
@@ -128,6 +142,51 @@ grid. Features:
 | Close window        | Click `x` button  |
 | Toggle Start menu   | Click Start       |
 
+## Simple Interface
+
+Type **`$simpleinterface`** or run **`./mshell --simple`** for a full-screen
+dock UI used to configure and boot an environment.
+
+Layout: a **circular dock** at the bottom center holds the launchable apps,
+a **LAUNCH** bar sits along the bottom edge, named **containers** fill the
+left pane and **settings** the right pane.
+
+| Action                       | Key(s)                    |
+|------------------------------|---------------------------|
+| Move between zones           | Tab                       |
+| Move selection               | Up / Down                 |
+| Add container                | `N`                       |
+| Rename selected container    | `R`                       |
+| Delete selected container    | `D`                       |
+| Open / toggle                | Enter / Space, or click   |
+| Change setting               | Left / Right              |
+| Launch chosen OS             | Click LAUNCH, or `L`      |
+| Launch dock app              | Click a dock icon         |
+| Back out / quit              | Esc                       |
+
+Settings:
+
+- **OS** — Nadrino OS or the GL terminal
+- **Theme** — Classic (Win95) or Aero (Windows 7)
+- **box64 preset** — `Basic`, `Enhanced`, or `Stability x3`
+
+A **container** is just a named group: give it a name, put app icons in it,
+and it shows up in the dock when that container is selected. Names are up to
+31 characters and are edited in place.
+
+Everything is drawn with the built-in 5×7 bitmap font (ASCII 0x20–0x7E), so
+no assets or locale data are required.
+
+## Windows 7 / Aero theme
+
+Nadrino OS ships two looks, selectable from the Start menu or the simple
+interface:
+
+- **Classic** — the original Win95/98 palette: teal desktop, navy title bars.
+- **Aero** — a Windows 7-style translucency: blue-glass title bars, lighter
+  window chrome, soft highlights. Applied as a post-render recolour pass, so
+  every app and window picks it up automatically.
+
 ## Display servers
 
 The `--gl` window needs a display:
@@ -148,8 +207,10 @@ termux-gl/
 ├── gl.h        # Renderer API
 ├── font.c      # 5×7 bitmap font, 2× scaled into atlas
 ├── font.h      # Font constants and atlas API
-├── os_nadrino.c# Nadrino OS desktop (Win95-style UI, apps, windows)
+├── os_nadrino.c# Nadrino OS desktop (Win95/Aero UI, apps, windows)
 ├── os_nadrino.h# Nadrino OS data structures and API
+├── simple_ui.c # $simpleinterface: dock, containers, box64 presets
+├── simple_ui.h # Simple interface API
 ├── Makefile    # Two targets: mshell (full), mshell-launcher (no SDL)
 └── README.md   # This file
 ```

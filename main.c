@@ -33,6 +33,7 @@
 #include <SDL2/SDL.h>
 #include "gl.h"
 #include "os_nadrino.h"
+#include "simple_ui.h"
 #endif
 
 #include "term.h"
@@ -45,10 +46,12 @@
 
 #define BANG_GL       "!experiment"
 #define BANG_OS       "!adaptivenadrino"
+#define BANG_SIMPLE   "$simpleinterface"
 
 #define FIRE_NONE     0
 #define FIRE_GL       1
 #define FIRE_OS       2
+#define FIRE_SIMPLE   3
 
 /* ===== bang_scan: detects trigger words in echoed shell output ===== */
 
@@ -66,6 +69,7 @@ static int bang_match(const char *tok)
 {
     if (!strcmp(tok, BANG_GL)) return FIRE_GL;
     if (!strcmp(tok, BANG_OS)) return FIRE_OS;
+    if (!strcmp(tok, BANG_SIMPLE)) return FIRE_SIMPLE;
     return FIRE_NONE;
 }
 
@@ -279,8 +283,10 @@ static int run_launcher(const char *self)
                 write_all(STDOUT_FILENO, (const char *)buf, (size_t)r);
                 if (!child_pid && child_type == 0) {
                     int fire = bang_scan(&bang, buf, (int)r);
-                    if (fire == FIRE_GL || fire == FIRE_OS) {
-                        const char *mode = fire == FIRE_GL ? "--gl" : "--os";
+                    if (fire == FIRE_GL || fire == FIRE_OS || fire == FIRE_SIMPLE) {
+                        const char *mode = (fire == FIRE_GL) ? "--gl"
+                                               : (fire == FIRE_OS) ? "--os"
+                                                                   : "--simple";
                         pid_t pid = fork();
                         if (pid == 0) {
                             execl(self, self, mode, (char *)NULL);
@@ -591,7 +597,9 @@ cleanup_ctx:
 
 /* --- Nadrino OS desktop --- */
 
-static int run_os_desktop(void)
+/* theme/stab come from the $simpleinterface screen; launch_app (-1 = none)
+ * opens one app window straight after boot, for dock-icon launches. */
+static int run_os_desktop(int theme, int stab, int launch_app)
 {
     SDL_Window *win = NULL;
     SDL_GLContext glctx = NULL;
@@ -631,6 +639,10 @@ static int run_os_desktop(void)
     if (rows > TERM_MAX_ROWS) rows = TERM_MAX_ROWS;
 
     os_nadrino_init(&os, cols, rows);
+    os_nadrino_set_theme(&os, theme);
+    os_nadrino_set_stab(&os, stab);
+    if (launch_app >= 0 && launch_app < ND_APP_COUNT)
+        os_nadrino_launch(&os, (nd_app_t)launch_app);
     force_redraw = 1;
 
     while (running && os_nadrino_running(&os)) {
@@ -713,6 +725,168 @@ cleanup_ctx:
     return 1;
 }
 
+/* --- Simple interface: the $simpleinterface configuration screen ---
+ *
+ * Painted into a term_t grid exactly like the OS desktop. LAUNCH boots the OS
+ * with the chosen look/box64 preset, or hands off to the GL terminal; an app
+ * icon opens that app inside a freshly launched desktop. */
+
+static int run_os_desktop(int theme, int stab, int launch_app);
+
+static int run_simple_interface(void)
+{
+    SDL_Window *win = NULL;
+    SDL_GLContext glctx = NULL;
+    gl_renderer_t gl;
+    su_state_t su;
+    term_t tmp;
+    int have_tmp = 0;
+    int cols = 80, rows = 24, dw = 960, dh = 640;
+    int running = 1, force_redraw = 1;
+    int go_os = 0, go_term = 0, go_app = -1;
+    Uint32 last_tick = 0;
+
+    signal(SIGPIPE, SIG_IGN);
+
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0) {
+        fprintf(stderr, "SDL_Init: %s\n  Install Termux:X11 and start it.\n", SDL_GetError());
+        return 1;
+    }
+
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 0);
+
+    win = SDL_CreateWindow("Simple Interface", SDL_WINDOWPOS_CENTERED,
+                           SDL_WINDOWPOS_CENTERED, dw, dh,
+                           SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+    if (!win) { SDL_Quit(); return 1; }
+
+    glctx = SDL_GL_CreateContext(win);
+    if (!glctx) { SDL_DestroyWindow(win); SDL_Quit(); return 1; }
+    SDL_GL_SetSwapInterval(1);
+    SDL_GL_GetDrawableSize(win, &dw, &dh);
+
+    if (gl_init(&gl, dw, dh) != 0) goto cleanup_ctx;
+
+    cols = dw / CELL_W; rows = dh / CELL_H;
+    if (cols < 40) cols = 40;
+    if (rows < 16) rows = 16;
+    if (cols > TERM_MAX_COLS) cols = TERM_MAX_COLS;
+    if (rows > TERM_MAX_ROWS) rows = TERM_MAX_ROWS;
+
+    su_init(&su, cols, rows);
+    if (term_init(&tmp, cols, rows) != 0) { have_tmp = 0; goto cleanup_ctx; }
+    have_tmp = 1;
+    force_redraw = 1;
+
+    while (running && su_running(&su)) {
+        SDL_Event ev;
+        int activity = force_redraw;
+        Uint32 now = SDL_GetTicks();
+
+        while (SDL_PollEvent(&ev)) {
+            switch (ev.type) {
+            case SDL_QUIT:
+                running = 0; break;
+
+            case SDL_WINDOWEVENT:
+                if (ev.window.event == SDL_WINDOWEVENT_RESIZED ||
+                    ev.window.event == SDL_WINDOWEVENT_SIZE_CHANGED ||
+                    ev.window.event == SDL_WINDOWEVENT_EXPOSED) {
+                    SDL_GL_GetDrawableSize(win, &dw, &dh);
+                    if (dw < CELL_W * 4) dw = CELL_W * 4;
+                    if (dh < CELL_H * 4) dh = CELL_H * 4;
+                    gl_resize(&gl, dw, dh);
+                    cols = dw / CELL_W; rows = dh / CELL_H;
+                    if (cols < 40) cols = 40;
+                    if (rows < 16) rows = 16;
+                    su_resize(&su, cols, rows);
+                    term_resize(&tmp, cols, rows);
+                    activity = 1;
+                }
+                break;
+
+            case SDL_TEXTINPUT:
+                su_text(&su, ev.text.text);
+                activity = 1; break;
+
+            case SDL_KEYDOWN: {
+                int m = mods_from_sdl(ev.key.keysym.mod);
+                term_key_t k = key_from_sdl(ev.key.keysym.sym);
+                if (k != K_NONE) {
+                    su_key(&su, k, m);
+                    activity = 1;
+                }
+                break;
+            }
+
+            case SDL_MOUSEBUTTONDOWN:
+                su_click(&su, ev.button.x / CELL_W, ev.button.y / CELL_H);
+                activity = 1; break;
+
+            case SDL_MOUSEMOTION:
+                su_motion(&su, ev.motion.x / CELL_W, ev.motion.y / CELL_H,
+                          ev.motion.state & SDL_BUTTON(1));
+                activity = 1; break;
+
+            default: break;
+            }
+        }
+
+        /* The screen reports intent; we perform it here. */
+        {
+            int arg = 0;
+            su_action_t a = su_take_action(&su, &arg);
+            if (a == SU_ACT_LAUNCH_OS) {
+                go_os = 1; running = 0;
+            } else if (a == SU_ACT_LAUNCH_APP) {
+                go_app = arg; go_os = 1; running = 0;
+            } else if (a == SU_ACT_EXIT) {
+                if (su_chosen_os(&su) == SU_OS_TERMINAL) go_term = 1;
+                running = 0;
+            }
+        }
+
+        if (now - last_tick >= 500) {
+            su_tick(&su);
+            last_tick = now;
+            activity = 1;                  /* cursor blink */
+        }
+
+        if (activity && have_tmp) {
+            su_render(&su, &tmp);
+            gl_render(&gl, &tmp, 0, 0);
+            SDL_GL_SwapWindow(win);
+            force_redraw = 0;
+        }
+    }
+
+    {
+        int theme = su_chosen_theme(&su);
+        int stab  = su_chosen_stab(&su);
+        int app   = go_app;
+
+        if (have_tmp) term_free(&tmp);
+        su_free(&su);
+        gl_destroy(&gl);
+        SDL_GL_DeleteContext(glctx); SDL_DestroyWindow(win); SDL_Quit();
+
+        if (go_term) return run_gl_terminal();
+        if (go_os)   return run_os_desktop(theme, stab, app);
+        return 0;
+    }
+
+cleanup_ctx:
+    if (have_tmp) term_free(&tmp);
+    su_free(&su);
+    gl_destroy(&gl);
+    SDL_GL_DeleteContext(glctx); SDL_DestroyWindow(win); SDL_Quit();
+    return 1;
+}
+
 #endif /* MSHELL_USE_SDL */
 
 /* =========================================================================== */
@@ -724,10 +898,12 @@ static void usage(void)
     printf("usage: mshell [options]\n"
            "\n"
            "  (no options)   run a shell in the terminal; type:\n"
-           "                 !experiment      — OpenGL ES terminal window\n"
-           "                 !adaptivenadrino — Nadrino OS desktop\n"
+           "                 !experiment       — OpenGL ES terminal window\n"
+           "                 !adaptivenadrino  — Nadrino OS desktop\n"
+           "                 $simpleinterface  — dock / containers / box64 setup\n"
            "  --gl           start with the OpenGL terminal straight away\n"
            "  --os           start with the Nadrino OS desktop straight away\n"
+           "  --simple       start with the simple interface straight away\n"
            "  -h, --help     this message\n"
            "\n"
            "  MSHELL_SHELL=/path/to/shell mshell   choose the shell\n");
@@ -736,19 +912,23 @@ static void usage(void)
 int main(int argc, char **argv)
 {
     const char *self;
-    int gl_first = 0, os_first = 0;
+    int gl_first = 0, os_first = 0, simple_first = 0;
     int i;
 
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) { usage(); return 0; }
         else if (!strcmp(argv[i], "--gl"))  gl_first = 1;
         else if (!strcmp(argv[i], "--os"))  os_first = 1;
+        else if (!strcmp(argv[i], "--simple")) simple_first = 1;
     }
 
     self = self_path(argv[0]);
     signal(SIGPIPE, SIG_IGN);
 
 #ifdef MSHELL_USE_SDL
+    if (simple_first) {
+        return run_simple_interface();
+    }
     if (gl_first) {
         /* Detach from real terminal */
         int devnull = open("/dev/null", O_RDWR);
@@ -758,7 +938,7 @@ int main(int argc, char **argv)
     if (os_first) {
         int devnull = open("/dev/null", O_RDWR);
         if (devnull >= 0) { dup2(devnull, STDIN_FILENO); dup2(devnull, STDOUT_FILENO); if (devnull > 2) close(devnull); }
-        return run_os_desktop();
+        return run_os_desktop(ND_THEME_WIN95, 0, -1);
     }
 #else
     if (gl_first) {
@@ -767,6 +947,10 @@ int main(int argc, char **argv)
     }
     if (os_first) {
         fprintf(stderr, "mshell: built without OpenGL support\n");
+        return 1;
+    }
+    if (simple_first) {
+        fprintf(stderr, "mshell: built without SDL2 support\n");
         return 1;
     }
 #endif
