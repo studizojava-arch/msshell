@@ -36,6 +36,7 @@
 #include "simple_ui.h"
 #endif
 
+#include "perf.h"
 #include "term.h"
 
 #define READ_CHUNK    8192
@@ -47,11 +48,13 @@
 #define BANG_GL       "!experiment"
 #define BANG_OS       "!adaptivenadrino"
 #define BANG_SIMPLE   "$simpleinterface"
+#define BANG_SETCONF  "!setconf"
 
 #define FIRE_NONE     0
 #define FIRE_GL       1
 #define FIRE_OS       2
 #define FIRE_SIMPLE   3
+#define FIRE_SETCONF  4
 
 /* ===== bang_scan: detects trigger words in echoed shell output ===== */
 
@@ -61,15 +64,23 @@ typedef struct {
     int  active;
     int  cmd_ok;
     int  quote;
+    int  pending;          /* !setconf matched; fires at end of line */
+    int  want_arg;         /* !setconf is waiting for its level argument */
+    char arg[16];          /* that argument; stays empty when omitted */
 } bang_t;
 
-static void bang_init(bang_t *b) { memset(b, 0, sizeof(*b)); b->cmd_ok = 1; }
+static void bang_init(bang_t *b)
+{
+    memset(b, 0, sizeof(*b));
+    b->cmd_ok = 1;
+}
 
 static int bang_match(const char *tok)
 {
     if (!strcmp(tok, BANG_GL)) return FIRE_GL;
     if (!strcmp(tok, BANG_OS)) return FIRE_OS;
     if (!strcmp(tok, BANG_SIMPLE)) return FIRE_SIMPLE;
+    if (!strcmp(tok, BANG_SETCONF)) return FIRE_SETCONF;
     return FIRE_NONE;
 }
 
@@ -81,9 +92,28 @@ static int bang_scan(bang_t *b, const uint8_t *d, int n)
         /* boundary ends token */
         if (c == '\r' || c == '\n' || c == ' ' || c == '\t' ||
             c == ';' || c == '|' || c == '&') {
-            if (b->active && !b->quote) fired = bang_match(b->tok);
+            if (b->active && !b->quote) {
+                int m = bang_match(b->tok);
+                if (m == FIRE_SETCONF) {
+                    /* !setconf may be followed by "low"/"mid"/"high", so defer
+                     * the trigger until the line ends rather than firing now. */
+                    b->pending = FIRE_SETCONF;
+                    b->want_arg = 1;
+                } else if (m != FIRE_NONE) {
+                    fired = m;
+                } else if (b->want_arg && b->len) {
+                    int k = b->len;
+                    if (k >= (int)sizeof(b->arg)) k = (int)sizeof(b->arg) - 1;
+                    memcpy(b->arg, b->tok, (size_t)k);
+                    b->arg[k] = '\0';
+                    b->want_arg = 0;
+                }
+            }
             b->active = 0; b->len = 0; b->tok[0] = '\0';
-            if (c == '\n' || c == '\r') b->quote = 0;
+            if (c == '\n' || c == '\r') {
+                b->quote = 0; b->want_arg = 0;
+                if (b->pending) { fired = b->pending; b->pending = 0; }
+            }
             b->cmd_ok = 1;
             continue;
         }
@@ -220,6 +250,52 @@ static void tty_restore(void)
     if (g_raw_on) { tcsetattr(STDIN_FILENO, TCSAFLUSH, &g_saved_tio); g_raw_on = 0; }
 }
 
+/* ===== !setconf — auto-detect & save performance profile ===== */
+
+/* Prints a summary and writes ~/.mshell.conf. `arg` is the optional level
+ * word typed after !setconf ("low"/"mid"/"high"); NULL means auto-detect.
+ * Writes with write_all because the launcher's tty is raw (OPOST off), so
+ * stdio's line buffering and \n translation are both unavailable. */
+static void run_setconf(const char *arg)
+{
+    perf_t p;
+    char desc[128];
+    char msg[320];
+    int n;
+    int lvl;
+
+    perf_detect(&p);
+
+    /* If user supplied an explicit level, honour it. */
+    if (arg && *arg) {
+        lvl = perf_parse_level(arg);
+        if (lvl < 0) {
+            n = snprintf(msg, sizeof(msg),
+                         "\x1b[33m!setconf: unknown level \"%s\" "
+                         "\xe2\x80\x94 use low | mid | high\x1b[0m\r\n", arg);
+            if (n > 0) write_all(STDOUT_FILENO, msg, (size_t)n);
+            return;
+        }
+        perf_force(&p, (perf_level_t)lvl);
+    }
+
+    if (perf_save(&p) == 0) {
+        perf_describe(&p, desc, sizeof(desc));
+        n = snprintf(msg, sizeof(msg),
+                     "\x1b[32m!setconf\x1b[0m %s \xe2\x80\x94 %s"
+                     "  (%d fps, %d scrollback, %d-byte reads)\r\n"
+                     "\x1b[2m  saved to %s\x1b[0m\r\n",
+                     perf_level_name(p.level), desc,
+                     p.max_fps, p.scrollback, p.read_chunk,
+                     perf_conf_path());
+    } else {
+        n = snprintf(msg, sizeof(msg),
+                     "\x1b[31m!setconf: cannot write %s\x1b[0m\r\n",
+                     perf_conf_path());
+    }
+    if (n > 0) write_all(STDOUT_FILENO, msg, (size_t)n);
+}
+
 /* ===== launcher ===== */
 
 static void launcher_banner(void)
@@ -228,6 +304,8 @@ static void launcher_banner(void)
         "\x1b[1;36mmshell\x1b[0m \x1b[2m(no-root launcher)\x1b[0m\r\n"
         "  \x1b[33m!experiment\x1b[0m      open OpenGL ES terminal window\r\n"
         "  \x1b[33m!adaptivenadrino\x1b[0m   open Nadrino OS desktop\r\n"
+        "  \x1b[36m$simpleinterface\x1b[0m    dock / containers / presets\r\n"
+        "  \x1b[32m!setconf\x1b[0m          auto-detect & save performance profile\r\n"
         "  \x1b[32mready\x1b[0m\r\n\r\n";
     write_all(STDOUT_FILENO, msg, strlen(msg));
 }
@@ -283,7 +361,11 @@ static int run_launcher(const char *self)
                 write_all(STDOUT_FILENO, (const char *)buf, (size_t)r);
                 if (!child_pid && child_type == 0) {
                     int fire = bang_scan(&bang, buf, (int)r);
-                    if (fire == FIRE_GL || fire == FIRE_OS || fire == FIRE_SIMPLE) {
+                    if (fire == FIRE_SETCONF) {
+                        run_setconf(bang.arg[0] ? bang.arg : NULL);
+                        bang_init(&bang);
+                    } else if (fire == FIRE_GL || fire == FIRE_OS ||
+                               fire == FIRE_SIMPLE) {
                         const char *mode = (fire == FIRE_GL) ? "--gl"
                                                : (fire == FIRE_OS) ? "--os"
                                                                    : "--simple";
@@ -403,6 +485,18 @@ static int ctrl_byte(SDL_Keycode sym, int *out)
     return 0;
 }
 
+static int sdl_mouse_button(Uint8 b, int *out)
+{
+    switch (b) {
+    case SDL_BUTTON_LEFT:     *out = 0;  return 1;
+    case SDL_BUTTON_MIDDLE:   *out = 1;  return 1;
+    case SDL_BUTTON_RIGHT:    *out = 2;  return 1;
+    case SDL_BUTTON_WHEELUP:  *out = 64; return 1;
+    case SDL_BUTTON_WHEELDOWN:*out = 65; return 1;
+    default: return 0;
+    }
+}
+
 static int drain_pty(term_t *t, uint8_t *scratch, int cap)
 {
     int total = 0;
@@ -434,6 +528,17 @@ static int run_gl_terminal(void)
     int running = 1, alive = 1, force_redraw = 1;
     Uint32 blink_t0 = 0, cursor_on = 1, dead_at = 0;
     char win_title[192] = "mshell";
+    perf_t prof;
+    int chunk, frame_ms;
+
+    /* Auto-detect, then let ~/.mshell.conf or MSHELL_PERF override it, so the
+     * window honours whatever !setconf recommended. */
+    perf_detect(&prof);
+    perf_load(&prof);
+    chunk = prof.read_chunk;
+    frame_ms = prof.frame_ms;
+    if (chunk < 1) chunk = READ_CHUNK;
+    if (frame_ms < 1) frame_ms = FRAME_MS;
 
     signal(SIGPIPE, SIG_IGN);
 
@@ -465,8 +570,9 @@ static int run_gl_terminal(void)
     if (rows > TERM_MAX_ROWS) rows = TERM_MAX_ROWS;
 
     if (term_init(&term, cols, rows) != 0) { gl_destroy(&gl); goto cleanup_ctx; }
+    term_set_scrollback(&term, prof.scrollback);
 
-    scratch = malloc(READ_CHUNK);
+    scratch = malloc((size_t)chunk);
     if (!scratch) { term_free(&term); gl_destroy(&gl); goto cleanup_ctx; }
 
     master = spawn_shell(&child, cols, rows);
@@ -488,10 +594,10 @@ static int run_gl_terminal(void)
         if (term.fd >= 0) {
             fd_set rfds; struct timeval tv;
             FD_ZERO(&rfds); FD_SET(term.fd, &rfds);
-            tv.tv_sec = 0; tv.tv_usec = FRAME_MS * 1000;
+            tv.tv_sec = 0; tv.tv_usec = frame_ms * 1000;
             ready = select(term.fd + 1, &rfds, NULL, NULL, &tv);
             if (ready < 0 && errno != EINTR) ready = 0;
-        } else { SDL_Delay(FRAME_MS); }
+        } else { SDL_Delay((Uint32)frame_ms); }
 
         while (SDL_PollEvent(&ev)) {
             switch (ev.type) {
@@ -545,12 +651,48 @@ static int run_gl_terminal(void)
                 }
                 break;
             }
+
+            case SDL_MOUSEBUTTONDOWN: {
+                int btn, kind;
+                Uint8 b = ev.button.button;
+                if (!sdl_mouse_button(b, &btn)) break;
+                /* SDL2 sends SDL_MOUSEBUTTONDOWN for press and release alike.
+                 * Wheel events carry buttons == 0 and are always a press; for
+                 * the real buttons, held-in-`buttons` means press. */
+                if (b == SDL_BUTTON_WHEELUP || b == SDL_BUTTON_WHEELDOWN)
+                    kind = MOUSE_EV_PRESS;
+                else if (ev.button.buttons & SDL_BUTTON(b))
+                    kind = MOUSE_EV_PRESS;
+                else
+                    kind = MOUSE_EV_RELEASE;
+                term_mouse(&term, btn, ev.button.x / CELL_W,
+                           ev.button.y / CELL_H, kind);
+                scroll = 0; activity = 1;
+                break;
+            }
+
+            case SDL_MOUSEMOTION: {
+                int state = ev.motion.state;
+                if (state & SDL_BUTTON(SDL_BUTTON_LEFT)) {
+                    term_mouse(&term, 0, ev.motion.x / CELL_W,
+                               ev.motion.y / CELL_H, MOUSE_EV_DRAG);
+                } else if (state & SDL_BUTTON(SDL_BUTTON_RIGHT)) {
+                    term_mouse(&term, 2, ev.motion.x / CELL_W,
+                               ev.motion.y / CELL_H, MOUSE_EV_DRAG);
+                } else if (state & SDL_BUTTON(SDL_BUTTON_MIDDLE)) {
+                    term_mouse(&term, 1, ev.motion.x / CELL_W,
+                               ev.motion.y / CELL_H, MOUSE_EV_DRAG);
+                }
+                activity = 1;
+                break;
+            }
+
             default: break;
             }
         }
 
         if (term.fd >= 0 && ready > 0) {
-            if (drain_pty(&term, scratch, READ_CHUNK) < 0) {
+            if (drain_pty(&term, scratch, chunk) < 0) {
                 char msg[64];
                 int l = snprintf(msg, sizeof(msg), "\r\n\x1b[2m[process exited]\x1b[0m\r\n");
                 if (l > 0) term_feed(&term, (const uint8_t *)msg, l);

@@ -289,9 +289,41 @@ static void set_priv_mode(term_t *t, int mode, int on)
     case 1:  t->app_cursor = on; break;
     case 7:  t->autowrap = on; break;
     case 25: t->cursor_visible = on; break;
+    case 1000:
+        if (on) t->mouse_mode |= MOUSE_CLICK; else t->mouse_mode &= ~MOUSE_CLICK;
+        break;
+    case 1002:
+        if (on) t->mouse_mode |= MOUSE_DRAG; else t->mouse_mode &= ~MOUSE_DRAG;
+        break;
+    case 1006:
+        if (on) t->mouse_mode |= MOUSE_SGR; else t->mouse_mode &= ~MOUSE_SGR;
+        break;
     case 1049:
     case 47:
-    case 1047: break; /* alt-screen toggle — ignored */
+    case 1047:
+        /* Guarded by alt_active: apps routinely send both ?1049h and ?47h, and
+         * an unguarded swap would bounce straight back to the main screen. */
+        if (on && !t->alt_active) {
+            /* Swap grid ↔ alt: `grid` always names the visible buffer, so the
+             * renderer needs no change. `alt` now holds the saved main screen. */
+            term_cell_t *tmp = t->grid;
+            int x, y;
+            t->grid = t->alt;
+            t->alt  = tmp;
+            t->alt_active = 1;
+            /* Clear the freshly-activated alt buffer so the app starts clean. */
+            for (y = 0; y < t->rows; y++)
+                for (x = 0; x < t->cols; x++)
+                    cell_blank(&row_of(t, y)[x], t->pen_fg, t->pen_bg);
+            t->cx = 0; t->cy = 0;
+            t->scrollTop = 0; t->scrollBot = t->rows - 1;
+        } else if (!on && t->alt_active) {
+            term_cell_t *tmp = t->grid;
+            t->grid = t->alt;
+            t->alt  = tmp;
+            t->alt_active = 0;
+        }
+        break;
     default: break;
     }
 }
@@ -524,7 +556,7 @@ int term_init(term_t *t, int cols, int rows)
 
     memset(t, 0, sizeof(*t));
     t->fd = -1;
-    t->sb_cap = TERM_SCROLLBACK;
+    t->sb_cap = TERM_SCROLLBACK_DEFAULT;
 
     if (cols < 1) cols = 1;
     if (cols > TERM_MAX_COLS) cols = TERM_MAX_COLS;
@@ -564,6 +596,48 @@ void term_free(term_t *t)
     free(t->sb);   t->sb = NULL;
 }
 
+int term_set_scrollback(term_t *t, int cap)
+{
+    term_cell_t *nsb;
+    int keep = t->sb_count;
+    int y;
+
+    if (cap < 0) cap = 0;
+    if (cap > TERM_SCROLLBACK) cap = TERM_SCROLLBACK;
+    if (keep > cap) keep = cap;
+    if (keep < 0) keep = 0;
+    if (cap == t->sb_cap) return 0;
+
+    nsb = cap > 0 ? calloc((size_t)t->cols * (size_t)cap, sizeof(term_cell_t)) : NULL;
+    if (!nsb && cap > 0) {
+        /* Out of memory: degrade to no history rather than kill the window. */
+        free(t->sb);
+        t->sb = NULL;
+        t->sb_cap = 0;
+        t->sb_head = 0;
+        t->sb_count = 0;
+        return -1;
+    }
+
+    if (nsb && t->sb && t->sb_cap > 0) {
+        /* Keep the newest `keep` rows, oldest first in the new ring. */
+        int start = (t->sb_head - keep + t->sb_cap) % t->sb_cap;
+        for (y = 0; y < keep; y++) {
+            int s = (start + y) % t->sb_cap;
+            memcpy(nsb + (size_t)y * (size_t)t->cols,
+                   t->sb + (size_t)s * (size_t)t->cols,
+                   sizeof(term_cell_t) * (size_t)t->cols);
+        }
+    }
+
+    free(t->sb);
+    t->sb = nsb;
+    t->sb_cap = cap;
+    t->sb_head = cap > 0 ? keep % cap : 0;
+    t->sb_count = keep;
+    return 0;
+}
+
 void term_clear(term_t *t)
 {
     int x, y;
@@ -579,7 +653,7 @@ void term_clear(term_t *t)
 
 void term_resize(term_t *t, int cols, int rows)
 {
-    term_cell_t *ng, *nsb;
+    term_cell_t *ng, *na, *nsb;
     int x, y;
 
     if (cols < 1) cols = 1;
@@ -588,6 +662,7 @@ void term_resize(term_t *t, int cols, int rows)
     if (rows > TERM_MAX_ROWS) rows = TERM_MAX_ROWS;
     if (cols == t->cols && rows == t->rows) return;
 
+    /* Resize the currently active buffer (grid or alt). */
     ng = calloc((size_t)cols * (size_t)rows, sizeof(term_cell_t));
     if (!ng) return;
 
@@ -601,6 +676,26 @@ void term_resize(term_t *t, int cols, int rows)
 
     free(t->grid);
     t->grid = ng;
+
+    /* Also resize alt so it stays in sync for the next swap. If this fails we
+     * drop the alternate screen entirely: keeping a buffer sized for the old
+     * grid would make the next swap write past its end. */
+    na = calloc((size_t)cols * (size_t)rows, sizeof(term_cell_t));
+    if (na) {
+        for (y = 0; y < rows; y++) {
+            for (x = 0; x < cols; x++) {
+                if (y < t->rows && x < t->cols)
+                    na[(size_t)y * cols + x] = t->alt[(size_t)y * t->cols + x];
+                else cell_blank(&na[(size_t)y * cols + x], t->pen_fg, t->pen_bg);
+            }
+        }
+        free(t->alt);
+        t->alt = na;
+    } else {
+        free(t->alt);
+        t->alt = NULL;
+        t->alt_active = 0;
+    }
 
     nsb = calloc((size_t)cols * (size_t)t->sb_cap, sizeof(term_cell_t));
     if (nsb) {
@@ -724,6 +819,45 @@ void term_send_text(term_t *t, const char *s, int len)
         s += w;
         len -= (int)w;
     }
+}
+
+/* ---- mouse forwarding ----
+ *
+ * When the app requests mouse reporting (DECSET 1000 = clicks, 1002 = drag,
+ * 1006 = SGR encoding), term_mouse() encodes the event and writes it to the
+ * pty. `button` follows the xterm numbering: 0 left, 1 middle, 2 right,
+ * 64 wheel-up, 65 wheel-down. `ev` is MOUSE_EV_PRESS / _RELEASE / _DRAG.
+ *
+ * xterm's button byte adds 32 for motion and 3 for a release; SGR mode also
+ * switches the terminator from M to m on release. Legacy X10 sends one byte
+ * at 32 + code and has no release event at all.
+ */
+void term_mouse(term_t *t, int button, int x, int y, int ev)
+{
+    char buf[32];
+    int n, code;
+
+    if (t->mouse_mode == 0) return;
+    if (ev == MOUSE_EV_DRAG && (t->mouse_mode & MOUSE_DRAG) == 0) return;
+    /* Wheel buttons (64/65) are press-only — no drag, no release. */
+    if (ev != MOUSE_EV_PRESS && (button == 64 || button == 65)) return;
+    if (x < 0 || y < 0 || x >= t->cols || y >= t->rows) return;
+
+    code = button;
+    if (ev == MOUSE_EV_DRAG)   code += 32;
+    if (ev == MOUSE_EV_RELEASE) code += 3;
+
+    if (t->mouse_mode & MOUSE_SGR) {
+        n = snprintf(buf, sizeof(buf), "\x1b[<%d;%d;%d%c",
+                     code, x + 1, y + 1, ev == MOUSE_EV_RELEASE ? 'm' : 'M');
+    } else {
+        /* X10: one byte per coordinate, so it caps out at 223 columns. */
+        if (x + 1 > 222 || y + 1 > 222) return;
+        n = snprintf(buf, sizeof(buf), "\x1b[M%c%c%c",
+                     (char)(32 + code), (char)(32 + x + 1), (char)(32 + y + 1));
+    }
+
+    if (n > 0 && t->fd >= 0) (void)!write(t->fd, buf, (size_t)n);
 }
 
 int term_bell_consume(term_t *t)

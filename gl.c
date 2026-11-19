@@ -161,9 +161,27 @@ static void glyph_uv(int cp, float *u0, float *v0, float *u1, float *v1)
 
 /* ------------------------------------------------------------------ API */
 
+/* The vertex staging buffer only ever needs one background plus one glyph per
+ * visible cell. Sizing it to the window rather than to TERM_MAX_COLS x
+ * TERM_MAX_ROWS saves ~140 KB on a phone showing 80x24. */
+static int ensure_cap(gl_renderer_t *gl, int cap)
+{
+    gl_vert_t *nv;
+
+    if (cap < 64) cap = 64;
+    if (gl->verts && gl->cap >= cap) return 0;
+
+    nv = realloc(gl->verts, sizeof(gl_vert_t) * (size_t)cap * VERTS_PER_QUAD);
+    if (!nv) return -1;
+    gl->verts = nv;
+    gl->cap = cap;
+    return 0;
+}
+
 int gl_init(gl_renderer_t *gl, int screen_w, int screen_h)
 {
     memset(gl, 0, sizeof(*gl));
+    gl->cap = 0;
 
     gl->prog = link_program();
     if (!gl->prog) return -1;
@@ -176,9 +194,6 @@ int gl_init(gl_renderer_t *gl, int screen_w, int screen_h)
     gl->a_col = glGetAttribLocation(gl->prog, "aCol");
     gl->u_tex = glGetUniformLocation(gl->prog, "uTex");
 
-    gl->verts = malloc(sizeof(gl_vert_t) * MAX_QUADS * VERTS_PER_QUAD);
-    if (!gl->verts) return -1;
-
     glGenBuffers(1, &gl->vbo);
     glBindTexture(GL_TEXTURE_2D, gl->tex);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
@@ -187,7 +202,8 @@ int gl_init(gl_renderer_t *gl, int screen_w, int screen_h)
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDisable(GL_DEPTH_TEST);
 
-    gl_resize(gl, screen_w, screen_h);
+    gl_resize(gl, screen_w, screen_h);   /* allocates gl->verts at the real size */
+    if (!gl->verts) return -1;
     return 0;
 }
 
@@ -208,6 +224,7 @@ void gl_resize(gl_renderer_t *gl, int screen_w, int screen_h)
     gl->rows = screen_h / CELL_H;
     if (gl->cols > TERM_MAX_COLS) gl->cols = TERM_MAX_COLS;
     if (gl->rows > TERM_MAX_ROWS) gl->rows = TERM_MAX_ROWS;
+    ensure_cap(gl, gl->cols * gl->rows * 2);
     glViewport(0, 0, screen_w, screen_h);
 }
 
@@ -217,7 +234,7 @@ void gl_render(gl_renderer_t *gl, term_t *t, int off, int cursor_on)
     int cols = gl->cols, rows = gl->rows;
     gl_vert_t *base = gl->verts;
     int nquad = 0;
-    int maxq = MAX_QUADS;
+    int maxq = gl->cap;
 
     glClearColor(((t->def_bg) & 0xFF) / 255.0f,
                  ((t->def_bg >> 8) & 0xFF) / 255.0f,
@@ -251,7 +268,17 @@ void gl_render(gl_renderer_t *gl, term_t *t, int off, int cursor_on)
             uint32_t fg = c->fg;
             uint32_t bg = c->bg;
             if (c->style & S_INVERSE) { fg = c->bg; bg = c->fg; }
-            if (c->style & S_BOLD)    fg |= 0x00202020;
+            if (c->style & S_BOLD) {
+                /* Brighten bold text: add 32 to each RGB channel, clamp to 255.
+                 * The old code used |= 0x00202020 which corrupts channels
+                 * > 0xDF (e.g. 0xE7DE6E | 0x20202020 → 0xFFFEFE). */
+                uint8_t r = (uint8_t)(fg & 0xFF), g = (uint8_t)((fg >> 8) & 0xFF),
+                        b = (uint8_t)((fg >> 16) & 0xFF);
+                if (r < 224) r += 32; else r = 255;
+                if (g < 224) g += 32; else g = 255;
+                if (b < 224) b += 32; else b = 255;
+                fg = (fg & 0xFF000000) | ((uint32_t)b << 16) | ((uint32_t)g << 8) | r;
+            }
 
             /* Draw the cursor as a solid block with inverted text. */
             int is_cur = cursor_on && (x == t->cx) && (sy == t->cy) && off == 0;

@@ -31,12 +31,13 @@ typedef struct {
 typedef struct {
     int screen_w, screen_h;
     int cols, rows;         /* cells that fit on screen */
+    int cap;                /* quads gl->verts can hold: cols*rows*2 */
     GLuint prog;
     GLuint tex;
     GLuint vbo;
     GLint a_pos, a_uv, a_col;
     GLint u_tex;
-    gl_vert_t *verts;       /* MAX_QUADS * VERTS_PER_QUAD */
+    gl_vert_t *verts;       /* cap * VERTS_PER_QUAD */
 } gl_renderer_t;
 
 /* Compile shaders, build the atlas texture, allocate the vertex buffer.

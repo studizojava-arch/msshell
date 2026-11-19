@@ -15,7 +15,8 @@
 #define TERM_MAX_COLS   220
 #define TERM_MAX_ROWS   80
 #define TERM_MAX_PARAMS 32
-#define TERM_SCROLLBACK 500
+#define TERM_SCROLLBACK 1000        /* hard cap; the HIGH profile asks for this */
+#define TERM_SCROLLBACK_DEFAULT 500 /* what term_init allocates until a profile says otherwise */
 #define TERM_ESC_MAX    256
 
 /* Style bits stored per cell. */
@@ -26,6 +27,11 @@
 #define S_DIM       0x10
 #define S_ITALIC    0x20
 #define S_HIDDEN    0x40
+
+/* Mouse reporting modes, OR-ed into term_t.mouse_mode (DECSET). */
+#define MOUSE_CLICK 0x01   /* ?1000: report button press/release */
+#define MOUSE_DRAG  0x02   /* ?1002: also report motion while held */
+#define MOUSE_SGR   0x04   /* ?1006: extended (SGR) encoding */
 
 #define RGBA(r, g, b, a) (((uint32_t)(a) << 24) | ((uint32_t)(b) << 16) | \
                           ((uint32_t)(g) << 8)  | (uint32_t)(r))
@@ -52,9 +58,11 @@ enum {
 };
 
 typedef struct {
-    /* Heap grids, all rows*cols (alt) or sb_cap*cols (sb). */
+    /* Heap grids. `grid` is always the buffer being displayed: entering the
+     * alternate screen swaps `grid` and `alt`, so the renderer never has to
+     * care which one is live. */
     term_cell_t *grid;
-    term_cell_t *alt;      /* spare buffer, kept simple: unused swap target */
+    term_cell_t *alt;      /* the other screen (saved main screen while on alt) */
     term_cell_t *sb;
 
     int cols, rows;
@@ -90,6 +98,9 @@ typedef struct {
     int app_cursor;        /* DECCKM: arrows send SS3 A-D */
     int cursor_visible;
     int autowrap;
+    int alt_active;        /* 1 = showing `alt` (DEC 47/1047/1049) */
+
+    int mouse_mode;        /* MOUSE_CLICK|DRAG|SGR (DECSET 1000/1002/1006) */
 
     int bell;
     char title[128];
@@ -104,6 +115,11 @@ int  term_init(term_t *t, int cols, int rows);
 void term_free(term_t *t);
 void term_clear(term_t *t);
 void term_resize(term_t *t, int cols, int rows);
+
+/* Resize the scrollback ring, dropping the oldest rows if it shrinks.
+ * 0 disables history altogether — what a low-end phone wants.
+ * Returns 0 on success, -1 if allocation failed (history then disabled). */
+int  term_set_scrollback(term_t *t, int rows);
 
 /* Feed output bytes read from the pty. */
 void term_feed(term_t *t, const uint8_t *data, int len);
@@ -134,5 +150,15 @@ int  term_encode_key(const term_t *t, term_key_t key, int mods,
 void term_send_key(term_t *t, term_key_t key, int mods);
 void term_send_text(term_t *t, const char *s, int len);
 int  term_bell_consume(term_t *t);
+
+/* Forward a mouse event to the pty, encoded per the modes the app asked for
+ * (DECSET 1000/1002/1006, see MOUSE_* above). `button` is 0=left, 1=middle,
+ * 2=right, 64=wheel-up, 65=wheel-down; `x`/`y` are 0-based cell coordinates;
+ * `ev` is one of MOUSE_EV_*. Does nothing when no mouse mode is active. */
+#define MOUSE_EV_PRESS   0
+#define MOUSE_EV_RELEASE 1
+#define MOUSE_EV_DRAG    2
+
+void term_mouse(term_t *t, int button, int x, int y, int ev);
 
 #endif /* MSHELL_TERM_H */
